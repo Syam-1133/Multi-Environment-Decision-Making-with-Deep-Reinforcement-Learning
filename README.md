@@ -1,169 +1,190 @@
-# Multi-Environment Decision Making with Deep Reinforcement Learning
+<div align="center">
 
-A PyTorch implementation of Deep Q-Network (DQN) variants trained to drive autonomously across **multiple highway environments simultaneously** — Highway, Merge, and Roundabout — using a shared encoder with environment-specific decision heads.
+# Multi-Environment Decision Making
+### Deep Reinforcement Learning for Autonomous Driving
+
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org)
+[![Gymnasium](https://img.shields.io/badge/Gymnasium-1.x-0081A5?style=for-the-badge)](https://gymnasium.farama.org)
+[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
+
+**A single RL agent that learns to drive across multiple road environments simultaneously — Highway, Merge lanes, and Roundabouts — using a shared perception encoder with environment-specific decision heads.**
+
+[Overview](#-overview) • [Architecture](#-architecture) • [Environments](#-environments) • [Algorithms](#-algorithms) • [Installation](#-installation) • [Usage](#-usage) • [Results](#-results)
+
+</div>
 
 ---
 
 ## Demo
 
+<div align="center">
+
 | Highway-v0 | Merge-v0 | Roundabout-v0 |
 |:-----------:|:--------:|:-------------:|
 | ![highway](media/highway.gif) | ![merge](media/merge.gif) | ![roundabout](media/roundabout.gif) |
-| Drive fast, stay in lanes | Merge into moving traffic | Navigate a circular junction |
+| Drive fast, stay in lane | Merge into moving traffic | Navigate a circular junction |
 
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Environments](#environments)
-- [Algorithms](#algorithms)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [How to Run](#how-to-run)
-- [Configuration](#configuration)
-- [Results](#results)
-- [Key Concepts Explained](#key-concepts-explained)
+</div>
 
 ---
 
 ## Overview
 
-The core idea of this project is **multi-environment generalization**: instead of training a separate agent for each road scenario, a single agent is trained across all environments simultaneously. At each episode reset, an environment is chosen at random — forcing the agent to develop a general driving policy rather than overfitting to one road type.
+Most autonomous driving research trains a **separate model per scenario**. This project takes a different approach — train one agent across all environments at once.
 
-**Why this matters:**
-- A single model handles diverse driving scenarios
-- The shared encoder learns transferable perceptual features
-- Separate Q-heads allow per-environment specialization
-- Mirrors real-world driving where conditions constantly change
+At every episode reset, the environment is chosen at random (Highway, Merge, or Roundabout). The agent must adapt and perform well on all three. This forces it to learn **transferable driving skills** rather than memorizing one road layout.
+
+**Key highlights:**
+- Single model — 3 environments, zero task-switching overhead
+- Shared encoder captures universal road perception
+- Per-environment Q-heads handle scenario-specific decision making
+- Supports 4 RL algorithm variants: DQN, DDQN, Dueling DQN, PER
 
 ---
 
 ## Architecture
 
 ```
-Observation (5 vehicles × 5 features = 25 numbers)
-        │
-        ▼
-┌───────────────────────┐
-│      ENCODER          │  ← Shared across all environments
-│  Linear → LayerNorm   │    Learns general road understanding
-│  → ReLU → Linear      │
-└───────────┬───────────┘
-            │  (256-dim embedding)
-            ├─────────────────────────────────┐
-            ▼                                 ▼
-┌─────────────────────┐         ┌─────────────────────────┐
-│  Standard Q-head    │   OR    │   Dueling Q-head         │
-│  Linear → Q-values  │         │   Value V(s) + Adv A(s,a)│
-│  (one per env)      │         │   (one per env)          │
-└─────────────────────┘         └─────────────────────────┘
-            │
-            ▼
-    5 Q-values (one per action)
-    → Pick action with highest Q
+  Input: Observation (5 nearby vehicles × 5 features = 25 values)
+         │
+         ▼
+  ┌──────────────────────────────────────────┐
+  │               ENCODER                    │
+  │   Linear(25→256) → LayerNorm → ReLU      │  ← Shared across ALL environments
+  │   → Linear(256→256) → LayerNorm → ReLU   │    Learns universal road features
+  └─────────────────────┬────────────────────┘
+                        │   256-dim embedding
+          ┌─────────────┼──────────────┐
+          ▼             ▼              ▼
+   ┌────────────┐ ┌────────────┐ ┌────────────┐
+   │ Highway    │ │ Merge      │ │ Roundabout │  ← Separate Q-head per environment
+   │  Q-head    │ │  Q-head    │ │  Q-head    │    Learns scenario-specific policy
+   └─────┬──────┘ └─────┬──────┘ └─────┬──────┘
+         └──────────────┼──────────────┘
+                        ▼
+              5 Q-values (one per action)
+              → argmax → chosen action
 ```
 
-### Two Networks (Double Q-Learning)
+### Double Q-Learning (Anti-Overestimation)
 
 ```
-┌─────────────────┐        ┌──────────────────────┐
-│  Critic Network │        │  Target Network       │
-│  (learns fast)  │        │  (updates slowly)     │
-│  every step     │        │  every 50 steps       │
-└─────────────────┘        └──────────────────────┘
-         │                            │
-         │  Action selection          │  Value estimation
-         │  "which action is best?"   │  "how good is that action?"
-         └────────────────┬───────────┘
-                          ▼
-               Reduces overestimation bias
-               → More stable learning
+  ┌────────────────────┐         ┌────────────────────────┐
+  │   Critic Network   │         │    Target Network       │
+  │   Updates every    │         │    Updates every        │
+  │   training step    │         │    50 steps (slowly)    │
+  └────────┬───────────┘         └────────────┬───────────┘
+           │                                   │
+           │  "Which action is best?"          │  "How much is that action worth?"
+           └──────────────────┬────────────────┘
+                              ▼
+                  Decoupled selection + evaluation
+                  → Eliminates overestimation bias
+                  → Stable, reliable learning
+```
+
+### Dueling Architecture (Optional)
+
+```
+  Standard Q-head:           Dueling Q-head:
+  ─────────────────          ────────────────────────────────────
+  Linear → Q(s,a)            Linear → V(s)       (state value)
+                              Linear → A(s,a)    (action advantage)
+                              Q(s,a) = V(s) + A(s,a) − mean(A)
 ```
 
 ---
 
 ## Environments
 
-All environments use the [highway-env](https://github.com/Farama-Foundation/HighwayEnv) library.
+All environments are powered by the [highway-env](https://github.com/Farama-Foundation/HighwayEnv) library.
 
-### Observation Space
-Each environment returns a **5×5 matrix** (25 numbers total):
+### Observation Space — 5×5 Matrix
+
 ```
-[presence, x_position, y_position, x_velocity, y_velocity]  ← ego vehicle (row 0)
-[presence, x_position, y_position, x_velocity, y_velocity]  ← nearby car 1
-[presence, x_position, y_position, x_velocity, y_velocity]  ← nearby car 2
-[presence, x_position, y_position, x_velocity, y_velocity]  ← nearby car 3
-[presence, x_position, y_position, x_velocity, y_velocity]  ← nearby car 4
+Row 0 (ego car):  [ present,  x,  y,  vx,  vy ]
+Row 1 (car 1):    [ present,  x,  y,  vx,  vy ]
+Row 2 (car 2):    [ present,  x,  y,  vx,  vy ]
+Row 3 (car 3):    [ present,  x,  y,  vx,  vy ]
+Row 4 (car 4):    [ present,  x,  y,  vx,  vy ]
 ```
 
-### Action Space
-5 discrete actions:
-| Action | Meaning |
-|--------|---------|
-| 0 | Lane change LEFT |
-| 1 | IDLE (maintain) |
-| 2 | Lane change RIGHT |
-| 3 | FASTER |
-| 4 | SLOWER |
+### Action Space — 5 Discrete Actions
+
+| ID | Action |
+|----|--------|
+| `0` | Lane change LEFT |
+| `1` | IDLE — maintain speed and lane |
+| `2` | Lane change RIGHT |
+| `3` | FASTER — accelerate |
+| `4` | SLOWER — decelerate |
 
 ### Environment Details
 
-| Environment | Goal | Episode Length | Key Rewards |
-|-------------|------|---------------|-------------|
-| `highway-v0` | Drive fast, stay right | 40 steps | Speed +0.4, Right lane +0.1, Crash -1 |
-| `merge-v0` | Merge safely into traffic | Variable | Speed +0.2, Merge penalty -0.5, Crash -1 |
-| `roundabout-v0` | Navigate the roundabout | 11 steps | Speed +0.2, Lane change -0.05, Crash -1 |
-| `intersection-v0` | Cross the intersection | 13 steps | Arrive +1, Speed +2, Crash -5 |
+| Environment | Objective | Duration | Reward Signals |
+|-------------|-----------|----------|---------------|
+| `highway-v0` | Drive fast, stay in right lane | 40 steps | Speed `+0.4` · Right lane `+0.1` · Crash `-1.0` |
+| `merge-v0` | Safely merge into highway traffic | Variable | Speed `+0.2` · Merge penalty `-0.5` · Crash `-1.0` |
+| `roundabout-v0` | Navigate roundabout without collision | 11 steps | Speed `+0.2` · Lane change `-0.05` · Crash `-1.0` |
+| `intersection-v0` | Cross intersection efficiently | 13 steps | Arrived `+1.0` · Speed `+2.0` · Crash `-5.0` |
 
 ---
 
 ## Algorithms
 
-Four variants are implemented, each building on the previous:
+Four variants are implemented, progressively improving upon each other:
 
-### 1. DQN (Deep Q-Network)
-The baseline. A neural network approximates Q(s,a) — the expected future reward for taking action `a` in state `s`.
+### DQN — Deep Q-Network (Baseline)
 
-```
-Loss = (r + γ · max_a Q_target(s', a)  -  Q(s, a))²
-         └── actual reward ──┘              └── prediction ──┘
-```
-
-### 2. DDQN (Double DQN) ← Default
-Fixes DQN's overestimation problem by separating action selection from value estimation:
+A neural network that approximates Q(s, a) — the expected cumulative reward for action `a` in state `s`.
 
 ```
-DQN:   uses target network for BOTH selection AND evaluation  → overestimates
-DDQN:  critic selects action, target evaluates it             → more accurate
+Loss = [ r  +  γ · max_a Q_target(s', a)  −  Q(s, a) ]²
+         ↑              ↑                       ↑
+     reward       future value             prediction
 ```
 
-### 3. Dueling DQN
-Splits the Q-value into two learned components:
-```
-Q(s, a) = V(s) + A(s, a) - mean(A(s, ·))
-           ↑               ↑
-    How good is        How much better is
-    this state?        this action vs average?
-```
-Better at learning which states are inherently good, regardless of action.
+### DDQN — Double DQN *(Default)*
 
-### 4. Prioritized Experience Replay (PER)
-Instead of sampling memories uniformly, samples experiences proportional to their TD-error (surprise):
-```
-High error experience  → sampled more often  (robot was wrong here → learn more)
-Low error experience   → sampled less often  (robot already knows this)
-```
-Uses a **Segment Tree** data structure for O(log N) priority sampling.
+Solves DQN's overestimation problem by decoupling action selection from value estimation:
 
-### Multi-Step Returns
-Instead of looking 1 step ahead, the agent looks **n=10 steps ahead**:
 ```
-1-step:  r₁ + γ·V(s₁)
-10-step: r₁ + γr₂ + γ²r₃ + ... + γ⁹r₁₀ + γ¹⁰·V(s₁₀)
+DQN:   target = r + γ · Q_target( s', argmax_a Q_target(s', a) )   ← same network → biased
+DDQN:  target = r + γ · Q_target( s', argmax_a Q_critic(s', a)  )   ← two networks → unbiased
 ```
-Better credit assignment — the agent learns the consequences of actions further into the future.
+
+### Dueling DQN
+
+Decomposes Q-values into state value V(s) and action advantage A(s,a):
+
+```
+Q(s, a) = V(s) + A(s, a) − mean( A(s, ·) )
+```
+
+The network learns **which states are dangerous** separately from **which actions are best** — more efficient learning, especially when many actions lead to similar outcomes.
+
+### Prioritized Experience Replay (PER)
+
+Instead of sampling replay memory uniformly, prioritizes experiences with high TD-error:
+
+```
+High TD-error → agent was surprised → sample more often → learn faster
+Low TD-error  → agent already knew  → sample less often → avoid wasted steps
+```
+
+Uses a **Segment Tree** (O log N) for efficient priority-based sampling.
+
+### Multi-Step Returns (n=10)
+
+Instead of bootstrapping just 1 step ahead, looks 10 steps forward:
+
+```
+1-step  return:  r₁  +  γ · V(s₁)
+10-step return:  r₁  +  γr₂  +  γ²r₃  +  ···  +  γ⁹r₁₀  +  γ¹⁰ · V(s₁₀)
+```
+
+Better long-horizon credit assignment — the agent learns the downstream consequences of its decisions.
 
 ---
 
@@ -172,38 +193,38 @@ Better credit assignment — the agent learns the consequences of actions furthe
 ```
 Multi-Env-Decision-Making/
 │
-├── run.py                   # Entry point — train or test
-├── train.py                 # Training loop (Trainer class)
-├── evaluate.py              # Evaluation loop (Evaluator class)
-├── highway.py               # Environment wrapper (HighwayEnv class)
-├── video.py                 # Video recording utility
-├── logger.py                # Metrics logging (CSV + TensorBoard)
-├── utils.py                 # Helper functions (MLP builder, soft update, etc.)
-├── config.yaml              # Main config (3 environments, DDQN)
-├── run.sh                   # Convenience bash commands
-├── requirements.txt         # Python dependencies
+├── run.py                        # Entry point — CLI for train / test modes
+├── train.py                      # Trainer class — full training loop
+├── evaluate.py                   # Evaluator class — policy evaluation
+├── highway.py                    # HighwayEnv wrapper — multi-env management
+├── video.py                      # VideoRecorder — MP4 episode recording
+├── logger.py                     # Logger — CSV + TensorBoard metrics
+├── utils.py                      # Utilities — MLP builder, soft update, seed
+├── config.yaml                   # Main config — DDQN on all 3 environments
+├── run.sh                        # Bash shortcuts for common commands
+├── requirements.txt              # Python dependencies
 │
 ├── policy/
-│   ├── agent.py             # Encoder, Critic, DRQLAgent (core RL logic)
-│   ├── replay_buffer.py     # ReplayBuffer + PrioritizedReplayBuffer
-│   └── segment_tree.py      # SumSegmentTree + MinSegmentTree for PER
+│   ├── agent.py                  # Core RL: Encoder + Critic + DRQLAgent
+│   ├── replay_buffer.py          # ReplayBuffer + PrioritizedReplayBuffer
+│   └── segment_tree.py           # SumSegmentTree + MinSegmentTree (for PER)
 │
-├── configurations/          # Pre-built configs for experiments
-│   ├── dqn/                 # Standard DQN configs
-│   ├── ddqn/                # Double DQN configs
-│   ├── dueling/             # Dueling DQN configs
-│   ├── prioritized_replay/  # PER configs
-│   ├── hidden_units_128_256/# Smaller network ablation
-│   └── hidden_units_256_512/# Larger network ablation
+├── configurations/               # Experiment presets
+│   ├── dqn/                      # Standard DQN (single & multi-env)
+│   ├── ddqn/                     # Double DQN variants
+│   ├── dueling/                  # Dueling DQN variants
+│   ├── prioritized_replay/       # PER variants
+│   ├── hidden_units_128_256/     # Small network ablation
+│   └── hidden_units_256_512/     # Large network ablation
 │
-├── env_configs/             # Per-environment reward tuning
+├── env_configs/                  # Per-environment reward shaping
 │   ├── highway-v0.yaml
 │   ├── merge-v0.yaml
 │   ├── roundabout-v0.yaml
 │   └── intersection-v0.yaml
 │
-├── experiments/             # Saved models and logs (auto-created)
-└── media/                   # Demo GIFs
+├── experiments/                  # Auto-created — saved models & logs
+└── media/                        # Demo GIFs
 ```
 
 ---
@@ -211,187 +232,231 @@ Multi-Env-Decision-Making/
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/Multi-Env-Decision-Making.git
+# 1. Clone the repository
+git clone https://github.com/Syam-1133/Multi-Env-Decision-Making.git
 cd Multi-Env-Decision-Making
 
-# Create virtual environment
+# 2. Create and activate a virtual environment
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # macOS / Linux
+# .venv\Scripts\activate         # Windows
 
-# Install dependencies
+# 3. Install dependencies
 pip install -r requirements.txt
-pip install moviepy  # Required for video recording
+pip install moviepy              # Required for video recording
 ```
 
-**Requirements:**
-- Python 3.10+
-- PyTorch 2.0+
-- gymnasium 1.x
-- highway-env 1.10+
+**System requirements:**
+
+| Requirement | Minimum |
+|-------------|---------|
+| Python | 3.10+ |
+| PyTorch | 2.0+ |
+| gymnasium | 1.x |
+| highway-env | 1.10+ |
+| RAM | 4 GB |
+| GPU | Optional (CPU works fine) |
 
 ---
 
-## How to Run
+## Usage
 
-### Training
+### Train the Agent
 
 ```bash
-# Train on all 3 environments (Highway + Merge + Roundabout)
+# Train on all 3 environments (Highway + Merge + Roundabout) — recommended
 python run.py --config config.yaml
 
 # Train on a single environment
 python run.py --config configurations/ddqn/ddqn_highway.yaml
 
-# Train with a specific algorithm
+# Train with Dueling DQN + PER
 python run.py --config configurations/dueling/dueling_highway_merge_roundabout.yaml
-
-# Output saved to experiments/<experiment_name>/
 ```
 
-### Testing a Trained Model
+Output is saved automatically to `experiments/<experiment_name>/`.
+
+### Test a Trained Model
 
 ```bash
-# Evaluate without video
+# Evaluate — prints mean and max reward
 python run.py --config config.yaml -m test -p experiments/ddqn/ddqn.pt
 
-# Evaluate with video recording
+# Evaluate + record video
 python run.py --config config.yaml -m test -p experiments/ddqn/ddqn.pt --render_video
 ```
 
-### Monitor Training with TensorBoard
+### Monitor with TensorBoard
 
 ```bash
 tensorboard --logdir experiments/
-# Open http://localhost:6006 in your browser
+# → Open http://localhost:6006
 ```
 
-### Using the run.sh helper
+### Bash Shortcuts
 
 ```bash
-bash run.sh train                                    # train all envs
-bash run.sh train-highway                            # train highway only
-bash run.sh test experiments/ddqn/ddqn.pt           # test model
-bash run.sh test-video experiments/ddqn/ddqn.pt     # test with video
-bash run.sh tensorboard                              # launch tensorboard
+bash run.sh train                                   # train on all environments
+bash run.sh train-highway                           # train on highway only
+bash run.sh train-merge                             # train on merge only
+bash run.sh train-roundabout                        # train on roundabout only
+bash run.sh test experiments/ddqn/ddqn.pt          # evaluate a model
+bash run.sh test-video experiments/ddqn/ddqn.pt    # evaluate with video
+bash run.sh tensorboard                             # open tensorboard
 ```
 
 ---
 
 ## Configuration
 
-The main `config.yaml` controls all hyperparameters:
-
 ```yaml
 experiment_name: ddqn
 
-# Training
-num_train_steps: 60000        # Total environment steps
-num_eval_steps: 1000          # Steps per evaluation
-eval_frequency: 1500          # Evaluate every N steps
+# ── Training ─────────────────────────────────────────
+num_train_steps: 60000       # Total environment steps
+num_eval_steps: 1000         # Steps per evaluation run
+eval_frequency: 1500         # Evaluate every N steps
 
-# Memory
-replay_buffer_capacity: 45000 # How many experiences to store
-batch_size: 32                # Experiences per gradient update
-multistep_return: 10          # N-step return lookahead
+# ── Memory ───────────────────────────────────────────
+replay_buffer_capacity: 45000  # Max stored experiences
+batch_size: 32                 # Samples per gradient update
+multistep_return: 10           # N-step return horizon
 
-# Agent
+# ── Agent ────────────────────────────────────────────
 agent:
-  learning_rate: 0.0005       # Adam optimizer LR
-  discount: 0.8               # Future reward discount (γ)
-  double_q: true              # Enable Double Q-learning
-  prioritized_replay: false   # Enable Prioritized Experience Replay
-  critic_tau: 1.0             # Target network update weight (1.0 = hard copy)
-  critic_target_update_frequency: 50  # Update target every N steps
+  learning_rate: 0.0005        # Adam optimizer learning rate
+  discount: 0.8                # Future reward discount (γ)
+  double_q: true               # Enable Double Q-learning
+  prioritized_replay: false    # Enable Prioritized Experience Replay
+  critic_tau: 1.0              # Target update weight (1.0 = hard copy)
+  critic_target_update_frequency: 50  # Steps between target updates
 
-# Network sizes
+# ── Network Architecture ─────────────────────────────
 critic:
-  hidden_dim: 256             # Q-network hidden layer size
-  dueling: false              # Enable Dueling architecture
+  hidden_dim: 256              # Q-network hidden size
+  dueling: false               # Enable Dueling architecture
 
 encoder:
-  hidden_dim: 256             # Encoder hidden layer size
+  hidden_dim: 256              # Encoder hidden size
 
-# Environments (comma-separated)
+# ── Environments ─────────────────────────────────────
 environments: highway-v0, merge-v0, roundabout-v0
 ```
 
 ---
 
-## Reading the Training Output
+## Reading Training Output
 
 ```
-| train | E: 24 | S: 376 | R: 29.3 | FPS: 3.1 | BR: 3.7 | CLOSS: 0.33
+| train | E: 38 | S: 867 | R: 31.5 | FPS: 2.9 | BR: 3.9 | CLOSS: 0.27
 ```
 
-| Column | Full Name | Meaning |
-|--------|-----------|---------|
-| `E` | Episode | Number of completed episodes |
-| `S` | Step | Total environment steps taken |
-| `R` | Reward | Total reward this episode (higher = better) |
-| `FPS` | Frames Per Second | Training speed |
-| `BR` | Batch Reward | Avg reward in the sampled mini-batch |
-| `CLOSS` | Critic Loss | Q-network prediction error (lower = better) |
-
-**Healthy training signs:**
-- `R` trending upward over episodes
-- `CLOSS` trending downward over time
-- Reward stabilizing around 28–32 after ~400 steps
+| Column | Meaning | Goal |
+|--------|---------|------|
+| `E` | Episode number | — |
+| `S` | Total steps taken | — |
+| `R` | Episode reward | **Higher is better** |
+| `FPS` | Training speed (frames/sec) | — |
+| `BR` | Average reward in batch | — |
+| `CLOSS` | Critic loss (prediction error) | **Lower is better** |
 
 ---
 
 ## Results
 
-Training a DDQN agent on all 3 environments for 60,000 steps:
+DDQN trained across all 3 environments for 60,000 steps:
 
-| Metric | Early (E:10) | Mid (E:40) | Late (E:60) |
-|--------|-------------|-----------|------------|
-| Reward | ~6–12 | ~28–31 | ~29–31 |
-| Critic Loss | 2.70 | 0.37 | 0.20 |
-| Behavior | Random | Mostly safe | Consistent |
+| Phase | Episode | Steps | Reward | Critic Loss | Behaviour |
+|-------|---------|-------|--------|-------------|-----------|
+| Early | E:6 | ~120 | ~6–20 | 2.70 | Random, frequent crashes |
+| Learning | E:25 | ~400 | ~29–31 | 0.33 | Emerging safe driving |
+| Converged | E:60 | ~1700 | ~29–31 | 0.20 | Consistent, smooth driving |
 
-Evaluation reward at step 1000: **28.8** (agent generalizes, not memorizing)
+**Evaluation at step 1000:** Reward = **28.8** — agent generalizes to unseen episodes, not memorizing.
+
+> Reward jumped from ~6 → ~30 within the first 400 training steps. Critic loss dropped 10× from start to convergence.
 
 ---
 
-## Key Concepts Explained
+## Key Concepts
 
-### Why Multi-Environment Training?
-Training on a single environment can cause overfitting — the agent memorizes patterns specific to that road. By randomly sampling environments at each episode, the agent is forced to learn transferable driving strategies.
+<details>
+<summary><b>Why multi-environment training?</b></summary>
 
-### Why Shared Encoder + Separate Heads?
-- **Shared encoder**: Detecting a nearby vehicle is the same skill on all roads
-- **Separate heads**: The optimal response to that vehicle differs by context (highway vs roundabout)
+Training on a single environment causes the agent to memorize that road's patterns. By randomly sampling environments each episode, the agent is forced to learn general driving intuitions that transfer across scenarios — similar to how a human driver adapts to new roads.
 
-### Why Experience Replay?
-Neural networks assume training data is independent and identically distributed (i.i.d.). Consecutive driving frames are highly correlated. Storing experiences and sampling randomly breaks this correlation, stabilizing training.
+</details>
 
-### Why Epsilon-Greedy Exploration?
+<details>
+<summary><b>Why shared encoder + separate Q-heads?</b></summary>
+
+- **Shared encoder** — detecting a nearby car and estimating its speed is the same perceptual task regardless of road type. Sharing weights here improves data efficiency.
+- **Separate Q-heads** — the optimal response to a car on your left is completely different on a highway vs a roundabout. Per-environment heads allow specialization without sacrificing shared perception.
+
+</details>
+
+<details>
+<summary><b>Why experience replay?</b></summary>
+
+Neural networks assume training samples are i.i.d. (independent and identically distributed). Consecutive frames in a driving episode are highly correlated — using them directly would cause unstable training. Storing all experiences in a replay buffer and sampling randomly breaks this correlation.
+
+</details>
+
+<details>
+<summary><b>Why epsilon-greedy exploration?</b></summary>
+
 ```
-At start:  ε = 0.95 → 95% random actions  (explore the environment)
-Over time: ε decays  → more greedy actions  (exploit learned knowledge)
-At end:    ε = 0.05 → 5% random actions   (mostly exploit, little explore)
+Start: ε = 0.95 → 95% random  (explore unknown situations)
+ ...    ε decays linearly
+  End: ε = 0.05 →  5% random  (exploit learned knowledge)
 ```
+
+Early training needs randomness to discover good strategies. Later, the agent should mostly use what it learned while still exploring occasionally to avoid getting stuck.
+
+</details>
 
 ---
 
 ## Dependencies
 
-| Package | Purpose |
-|---------|---------|
-| `torch` | Neural network and gradient computation |
-| `gymnasium` | RL environment interface |
-| `highway-env` | Driving simulation environments |
-| `tensorboard` | Training visualization |
-| `numpy` | Array operations |
-| `imageio` / `moviepy` | Video recording |
-| `PyYAML` | Config file parsing |
-| `matplotlib` | Plotting results |
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `torch` | ≥2.0 | Neural network training and inference |
+| `gymnasium` | ≥1.0 | RL environment interface |
+| `highway-env` | ≥1.10 | Driving simulation environments |
+| `tensorboard` | latest | Training metrics visualization |
+| `numpy` | ≥1.24 | Numerical array operations |
+| `imageio` + `moviepy` | latest | Episode video recording |
+| `PyYAML` | latest | Config file parsing |
+| `matplotlib` | latest | Plotting utilities |
+
+---
+
+## Author
+
+<div align="center">
+
+**Syam Gudipudi**
+*Machine Learning Engineer*
+
+[![GitHub](https://img.shields.io/badge/GitHub-Syam--1133-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Syam-1133)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-syam1133-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/syam1133/)
+[![Email](https://img.shields.io/badge/Email-syamkklr123@gmail.com-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:syamkklr123@gmail.com)
+
+</div>
 
 ---
 
 ## Acknowledgements
 
-- Environments provided by [highway-env](https://github.com/Farama-Foundation/HighwayEnv) (Farama Foundation)
-- Architecture inspired by [CURL](https://github.com/MishaLaskin/curl) and DrQ
-- Reference: [Multi-Env Decision Making — Shantanu Acharya](https://shantanuacharya.notion.site/Multi-Env-Decision-Making-d40e0ad783e64eebbb755756306e8ed9)
+- Driving environments by [highway-env](https://github.com/Farama-Foundation/HighwayEnv) — Farama Foundation
+- Architecture influenced by [CURL](https://github.com/MishaLaskin/curl) and DrQ
+- Original research reference: [Multi-Env Decision Making — Shantanu Acharya](https://shantanuacharya.notion.site/Multi-Env-Decision-Making-d40e0ad783e64eebbb755756306e8ed9)
+
+---
+
+<div align="center">
+
+*If you found this project useful, consider giving it a ⭐ on GitHub!*
+
+</div>
