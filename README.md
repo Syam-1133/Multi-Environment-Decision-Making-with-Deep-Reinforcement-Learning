@@ -451,7 +451,7 @@ Early training needs randomness to discover good strategies. Later, the agent sh
 
 - Driving environments by [highway-env](https://github.com/Farama-Foundation/HighwayEnv) — Farama Foundation
 - Architecture influenced by [CURL](https://github.com/MishaLaskin/curl) and DrQ
-- Original research reference: [Multi-Env Decision Making — Shantanu Acharya](https://shantanuacharya.notion.site/Multi-Env-Decision-Making-d40e0ad783e64eebbb755756306e8ed9)
+
 
 ---
 
