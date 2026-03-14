@@ -1,0 +1,19 @@
+# Base parameters
+observation:
+  type: Kinematics
+action:
+  type: DiscreteMetaAction
+simulation_frequency: 15
+policy_frequency: 1
+show_trajectories: false
+
+# Enviroment specific parameters
+duration: 40
+collision_reward: -1
+right_lane_reward: 0.1
+high_speed_reward: 0.4
+lane_change_reward: 0
+reward_speed_range:
+  - 20
+  - 30
+offroad_terminal: false
